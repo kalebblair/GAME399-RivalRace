@@ -1,17 +1,4 @@
-# Rival Race
-
-Empty starter project for a 3D game using **Three.js** + **React** + **TypeScript** (built with Vite).
-
-## Getting started
-
-```bash
-npm install
-npm run dev
-```
-
-## Notes
-
-- The starter scene is in `src/ThreeCanvas.tsx`.
+# React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
