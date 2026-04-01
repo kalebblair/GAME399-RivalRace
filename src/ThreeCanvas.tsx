@@ -78,6 +78,12 @@ function setAllMaterialsDoubleSided(obj: THREE.Object3D) {
   })
 }
 
+/** Must match Rapier `ColliderDesc.capsule(halfHeight, radius)` below. */
+const RUNNER_CAPSULE_HALF_H = 0.45
+const RUNNER_CAPSULE_RADIUS = 0.35
+/** World-space offset from body center down to “feet” / ground contact ring. */
+const RUNNER_FEET_OFFSET_Y = -(RUNNER_CAPSULE_HALF_H + RUNNER_CAPSULE_RADIUS)
+
 export function ThreeCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -213,14 +219,16 @@ export function ThreeCanvas() {
         levelPlaceholders.push({ id: b.id, mesh, size, center })
       }
 
+      // Single transform driven by physics each frame — avoids skinned / nested GLTF root issues.
+      const runnerRoot = new THREE.Group()
+      scene.add(runnerRoot)
+
       const runnerMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.35, 0.6, 8, 16),
+        new THREE.CapsuleGeometry(RUNNER_CAPSULE_RADIUS, RUNNER_CAPSULE_HALF_H * 2, 8, 16),
         new THREE.MeshStandardMaterial({ color: 0xff3b7a, metalness: 0.15, roughness: 0.35 }),
       )
       runnerMesh.castShadow = true
-      scene.add(runnerMesh)
-      // Tick loop updates this; swaps to Kenney `character.glb` when loaded.
-      let runnerVisual: THREE.Object3D = runnerMesh
+      runnerRoot.add(runnerMesh)
 
       const finishMesh = new THREE.Mesh(
         new THREE.TorusGeometry(finishRef.current.radius, 0.12, 12, 48),
@@ -275,8 +283,8 @@ export function ThreeCanvas() {
           ;(p.mesh.material as THREE.Material).dispose()
         }
 
-        // Runner character
-        const charObj = character.scene
+        // Runner character: child of runnerRoot so physics only moves the group.
+        const charObj = character.scene.clone(true)
         setAllMaterialsDoubleSided(charObj)
         charObj.scale.setScalar(0.9)
         charObj.traverse((c) => {
@@ -285,12 +293,14 @@ export function ThreeCanvas() {
             ;(c as THREE.Mesh).receiveShadow = false
           }
         })
-        scene.add(charObj)
-        scene.remove(runnerMesh)
+        // Align model feet to capsule bottom in runnerRoot local space (origin = Rapier body center).
+        charObj.position.set(0, 0, 0)
+        const charBounds = new THREE.Box3().setFromObject(charObj)
+        charObj.position.y = RUNNER_FEET_OFFSET_Y - charBounds.min.y
+        runnerRoot.remove(runnerMesh)
         runnerMesh.geometry.dispose()
         ;(runnerMesh.material as THREE.Material).dispose()
-        runnerVisual = charObj
-        charObj.position.copy(runnerRef.current.position)
+        runnerRoot.add(charObj)
 
         // Finish marker
         const flagObj = flag.scene
@@ -330,7 +340,7 @@ export function ThreeCanvas() {
         RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(runnerStart.x, runnerStart.y, runnerStart.z),
       )
       const runnerCollider = world.createCollider(
-        RAPIER.ColliderDesc.capsule(0.45, 0.35).setFriction(0.0),
+        RAPIER.ColliderDesc.capsule(RUNNER_CAPSULE_HALF_H, RUNNER_CAPSULE_RADIUS).setFriction(0.0),
         runnerBody,
       )
 
@@ -369,6 +379,8 @@ export function ThreeCanvas() {
         runnerBody.setLinvel(new RAPIER.Vector3(0, 0, 0), true)
         runnerBody.setAngvel(new RAPIER.Vector3(0, 0, 0), true)
         cdsRef.current = { slowReadyAtMs: t, invertReadyAtMs: t, pushReadyAtMs: t }
+        runnerRoot.position.set(0, 1.0, 0)
+        runnerRoot.updateMatrixWorld(true)
       }
       resetPhysics()
 
@@ -550,9 +562,14 @@ export function ThreeCanvas() {
           }
         }
 
-        // Cameras
+        // Runner visual = physics body center (children handle model pivot vs. capsule).
         const rPos = runnerRef.current.position
-        runnerVisual.position.copy(rPos)
+        runnerRoot.position.copy(rPos)
+        const hv = runnerRef.current.velocity
+        if (hv.x * hv.x + hv.z * hv.z > 0.04) {
+          runnerRoot.rotation.y = Math.atan2(hv.x, hv.z)
+        }
+        runnerRoot.updateMatrixWorld(true)
 
         const camTarget = new THREE.Vector3(rPos.x, rPos.y + 0.35, rPos.z)
         const camPos = new THREE.Vector3(rPos.x - 4.0, rPos.y + 3.0, rPos.z + 4.2)
