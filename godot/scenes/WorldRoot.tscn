@@ -1,0 +1,24 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/WorldRoot.gd" id="1_world"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_finish"]
+radius = 1.2
+
+[node name="root" type="Node3D" unique_id=1906862935]
+script = ExtResource("1_world")
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=401305214]
+transform = Transform3D(0.840656, -0.202645, 0.502571, 0, 0.927184, 0.374607, -0.541572, -0.314883, 0.780071, 33, 20, 9)
+
+[node name="Environment" type="WorldEnvironment" parent="." unique_id=611270150]
+
+[node name="Platforms" type="Node3D" parent="."]
+
+[node name="TrapRoot" type="Node3D" parent="."]
+
+[node name="FinishArea" type="Area3D" parent="."]
+position = Vector3(48, 3.31, -4)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="FinishArea"]
+shape = SubResource("SphereShape3D_finish")

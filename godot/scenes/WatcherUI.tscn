@@ -1,0 +1,35 @@
+[gd_scene format=3]
+
+[node name="root" type="CanvasLayer" unique_id=1231486386]
+
+[node name="RootUI" type="Control" parent="." unique_id=1608948970]
+layout_mode = 3
+anchors_preset = 0
+
+[node name="RoleLabel" type="Label" parent="RootUI"]
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 320.0
+offset_bottom = 44.0
+text = "Role: RUNNER (Tab to swap)"
+
+[node name="RunLabel" type="Label" parent="RootUI"]
+offset_left = 16.0
+offset_top = 44.0
+offset_right = 420.0
+offset_bottom = 74.0
+text = "Run: IDLE  Time: 0:00.00 (Enter=start, R=reset)"
+
+[node name="TrapLabel" type="Label" parent="RootUI"]
+offset_left = 16.0
+offset_top = 72.0
+offset_right = 520.0
+offset_bottom = 102.0
+text = "Trap: SPIKE  Active: 0/3 (Q spike, E slow, LMB place)"
+
+[node name="AbilityLabel" type="Label" parent="RootUI"]
+offset_left = 16.0
+offset_top = 100.0
+offset_right = 760.0
+offset_bottom = 130.0
+text = "Abilities: [1] Slow 0.0s  [2] Invert 0.0s  [3] Push 0.0s"

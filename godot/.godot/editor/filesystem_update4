@@ -1,0 +1,4 @@
+res://scripts/Main.gd
+res://scripts/RunnerController.gd
+res://scripts/WorldRoot.gd
+res://scenes/Main.tscn

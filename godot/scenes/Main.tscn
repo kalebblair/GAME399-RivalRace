@@ -1,0 +1,30 @@
+[gd_scene format=3 uid="uid://coiiw4xvnkx8p"]
+
+[ext_resource type="Script" uid="uid://bbs2ybi6x3xj8" path="res://scripts/Main.gd" id="1_main"]
+[ext_resource type="PackedScene" path="res://scenes/WorldRoot.tscn" id="2_world"]
+[ext_resource type="PackedScene" path="res://scenes/Runner.tscn" id="3_runner"]
+[ext_resource type="PackedScene" path="res://scenes/WatcherUI.tscn" id="4_ui"]
+[ext_resource type="PackedScene" path="res://scenes/Audio.tscn" id="5_audio"]
+
+[node name="root" type="Node3D" unique_id=1704256230]
+script = ExtResource("1_main")
+
+[node name="WorldRoot" parent="." unique_id=1444758141 instance=ExtResource("2_world")]
+
+[node name="CameraRig" type="Node3D" parent="." unique_id=513281483]
+
+[node name="WatcherCamera" type="Camera3D" parent="CameraRig" unique_id=51840832]
+transform = Transform3D(1, 0, 0, 0, 0.325568, 0.945519, 0, -0.945519, 0.325568, 23, 20, -4.5)
+projection = 1
+size = 20.0
+
+[node name="RunnerCamera" type="Camera3D" parent="CameraRig" unique_id=1625970557]
+transform = Transform3D(1, 0, 0, 0, 0.6, 0.8, 0, -0.8, 0.6, -4, 3.2, 4.2)
+current = true
+
+[node name="Runner" parent="." unique_id=485117865 instance=ExtResource("3_runner")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
+
+[node name="WatcherUI" parent="." unique_id=833153580 instance=ExtResource("4_ui")]
+
+[node name="Audio" parent="." unique_id=373137127 instance=ExtResource("5_audio")]
