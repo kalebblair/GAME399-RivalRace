@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { useGameAudio, type GameAudioControls } from './audio/GameAudioContext'
 
 type Role = 'runner' | 'watcher'
 type TrapType = 'spike' | 'slow'
@@ -17,6 +18,8 @@ type Trap = {
 type Debuff = {
   slowUntilMs: number
   invertUntilMs: number
+  /** No WASD / jump; gravity still applies. */
+  freezeUntilMs: number
 }
 
 type Cooldowns = {
@@ -81,11 +84,90 @@ function setAllMaterialsDoubleSided(obj: THREE.Object3D) {
 /** Must match Rapier `ColliderDesc.capsule(halfHeight, radius)` below. */
 const RUNNER_CAPSULE_HALF_H = 0.45
 const RUNNER_CAPSULE_RADIUS = 0.35
-/** World-space offset from body center down to “feet” / ground contact ring. */
-const RUNNER_FEET_OFFSET_Y = -(RUNNER_CAPSULE_HALF_H + RUNNER_CAPSULE_RADIUS)
+/**
+ * Body origin = soles on the ground. Rapier’s capsule is centered on its segment; offset so capsule bottom meets y=0.
+ */
+const RUNNER_CAPSULE_OFFSET_Y = RUNNER_CAPSULE_HALF_H + RUNNER_CAPSULE_RADIUS
+/** Camera / movement pivot above feet (world Y). */
+const RUNNER_CHEST_Y_ABOVE_FEET = 1.05
+
+/** Default third-person offset; horizontal part rotates by `cameraYaw` around the runner. */
+const RUNNER_CAM_OFFSET_BASE = new THREE.Vector3(-4, 3, 4.2)
+/** Radians per pixel (horizontal mouse drag while runner). */
+const RUNNER_CAM_MOUSE_SENS = 0.006
+
+/** Top-down camera: center on course, half-width in world units (must frame full level). */
+const WATCH_LEVEL_CENTER = new THREE.Vector3(23, 0, -2.5)
+const WATCH_HALF_WIDTH = 32
+
+/** Sensor ball radii — must match `ColliderDesc.ball` in `placeTrapAt`. */
+const TRAP_SPIKE_BALL_R = 0.55
+const TRAP_SLOW_BALL_R = 0.7
+const SPIKE_FREEZE_MS = 2400
+
+/** Squared distance from point P to segment AB (for capsule-axis test). */
+function distSqPointToSegment3D(
+  px: number,
+  py: number,
+  pz: number,
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+): number {
+  const abx = bx - ax
+  const aby = by - ay
+  const abz = bz - az
+  const apx = px - ax
+  const apy = py - ay
+  const apz = pz - az
+  const abLenSq = abx * abx + aby * aby + abz * abz
+  let t = abLenSq > 1e-14 ? (apx * abx + apy * aby + apz * abz) / abLenSq : 0
+  t = Math.max(0, Math.min(1, t))
+  const qx = ax + abx * t
+  const qy = ay + aby * t
+  const qz = az + abz * t
+  const dx = px - qx
+  const dy = py - qy
+  const dz = pz - qz
+  return dx * dx + dy * dy + dz * dz
+}
+
+/**
+ * Trap sensor vs runner capsule. `(rx,ry,rz)` is body translation = **feet** on the ground plane, not capsule center.
+ */
+function trapBallOverlapsRunnerCapsule(
+  trapX: number,
+  trapY: number,
+  trapZ: number,
+  ballRadius: number,
+  feetX: number,
+  feetY: number,
+  feetZ: number,
+): boolean {
+  const h = RUNNER_CAPSULE_HALF_H
+  const capR = RUNNER_CAPSULE_RADIUS
+  const ax = feetX
+  const ay = feetY + capR
+  const az = feetZ
+  const bx = feetX
+  const by = feetY + capR + 2 * h
+  const bz = feetZ
+  const dSq = distSqPointToSegment3D(trapX, trapY, trapZ, ax, ay, az, bx, by, bz)
+  const reach = ballRadius + capR + 0.2
+  return dSq <= reach * reach
+}
 
 export function ThreeCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const audio = useGameAudio()
+  const audioRef = useRef<GameAudioControls>(audio)
+  audioRef.current = audio
+  const finishSoundLatchedRef = useRef(false)
+  /** Set inside scene init; used by HUD Reset to clear Rapier traps / runner pose. */
+  const resetPhysicsFromHudRef = useRef<(death?: 'void') => void>(() => {})
 
   const [role, setRole] = useState<Role>('runner')
   const roleRef = useRef<Role>('runner')
@@ -101,16 +183,20 @@ export function ThreeCanvas() {
 
   const [runState, setRunState] = useState<'idle' | 'running' | 'finished'>('idle')
   const runStateRef = useRef<'idle' | 'running' | 'finished'>('idle')
-  useEffect(() => {
-    runStateRef.current = runState
-  }, [runState])
+  const setRunStateSyncedRef = useRef<(s: 'idle' | 'running' | 'finished') => void>((s) => {
+    runStateRef.current = s
+  })
+  setRunStateSyncedRef.current = (s) => {
+    runStateRef.current = s
+    setRunState(s)
+  }
 
   const [runStartMs, setRunStartMs] = useState(0)
   const [runEndMs, setRunEndMs] = useState(0)
   const [hudNowMs, setHudNowMs] = useState(() => nowMs())
 
   const trapsRef = useRef<Trap[]>([])
-  const debuffRef = useRef<Debuff>({ slowUntilMs: 0, invertUntilMs: 0 })
+  const debuffRef = useRef<Debuff>({ slowUntilMs: 0, invertUntilMs: 0, freezeUntilMs: 0 })
   const cdsRef = useRef<Cooldowns>({ slowReadyAtMs: 0, invertReadyAtMs: 0, pushReadyAtMs: 0 })
 
   const inputRef = useRef({
@@ -122,23 +208,36 @@ export function ThreeCanvas() {
   })
 
   const runnerRef = useRef({
-    position: new THREE.Vector3(0, 1.0, 0),
+    position: new THREE.Vector3(0, 0.02, 0),
     velocity: new THREE.Vector3(0, 0, 0),
     grounded: false,
   })
 
   const finishRef = useRef({
-    center: new THREE.Vector3(18, 1.0, -10),
+    center: new THREE.Vector3(48, 0, -4),
     radius: 1.2,
   })
 
+  /**
+   * Small platforms (~3.2 m) with ~2.5 m edge gaps — jumps required between each step.
+   * Heights rise slowly; goal pad is slightly wider.
+   */
   const level = useMemo<LevelBox[]>(
     () => [
-      { id: 'ground', min: new THREE.Vector3(-6, -0.5, -6), max: new THREE.Vector3(6, 0, 6), color: 0x1f2a44 },
-      { id: 'p1', min: new THREE.Vector3(2, 0.4, 1), max: new THREE.Vector3(6, 0.8, 4), color: 0x22335a },
-      { id: 'p2', min: new THREE.Vector3(6.5, 0.9, -1.5), max: new THREE.Vector3(10.5, 1.3, 1.2), color: 0x22335a },
-      { id: 'p3', min: new THREE.Vector3(10.8, 1.4, -5.2), max: new THREE.Vector3(14.8, 1.8, -2.0), color: 0x22335a },
-      { id: 'p4', min: new THREE.Vector3(14.5, 1.9, -9.2), max: new THREE.Vector3(19.5, 2.3, -6.2), color: 0x22335a },
+      {
+        id: 'ground',
+        min: new THREE.Vector3(-4, -0.55, -4),
+        max: new THREE.Vector3(4, 0, 4),
+        color: 0x1a2744,
+      },
+      { id: 'p01', min: new THREE.Vector3(6.5, 0, -1.35), max: new THREE.Vector3(9.7, 0.4, 1.35), color: 0x243456 },
+      { id: 'p02', min: new THREE.Vector3(12.2, 0.38, -1.75), max: new THREE.Vector3(15.4, 0.78, 0.95), color: 0x2a3f5e },
+      { id: 'p03', min: new THREE.Vector3(17.9, 0.76, -2.15), max: new THREE.Vector3(21.1, 1.16, 0.55), color: 0x314868 },
+      { id: 'p04', min: new THREE.Vector3(23.6, 1.14, -2.55), max: new THREE.Vector3(26.8, 1.54, 0.15), color: 0x375a7a },
+      { id: 'p05', min: new THREE.Vector3(29.3, 1.52, -2.95), max: new THREE.Vector3(32.5, 1.92, -0.25), color: 0x3d5c8a },
+      { id: 'p06', min: new THREE.Vector3(35, 1.9, -3.35), max: new THREE.Vector3(38.2, 2.3, -0.65), color: 0x456892 },
+      { id: 'p07', min: new THREE.Vector3(40.7, 2.28, -3.75), max: new THREE.Vector3(43.9, 2.68, -1.05), color: 0x4d7498 },
+      { id: 'goal', min: new THREE.Vector3(46.4, 2.66, -5.5), max: new THREE.Vector3(51.2, 3.06, -2), color: 0x5a7fb8 },
     ],
     [],
   )
@@ -170,6 +269,10 @@ export function ThreeCanvas() {
   }, [])
 
   useEffect(() => {
+    audio.setRunMusic(runState === 'running')
+  }, [audio, runState])
+
+  useLayoutEffect(() => {
     const container = containerRef.current
     if (!container) return
 
@@ -193,11 +296,11 @@ export function ThreeCanvas() {
 
       scene.add(new THREE.AmbientLight(0xffffff, 0.55))
       const dir = new THREE.DirectionalLight(0xffffff, 1.0)
-      dir.position.set(6, 10, 6)
+      dir.position.set(WATCH_LEVEL_CENTER.x + 10, 20, WATCH_LEVEL_CENTER.z + 12)
       dir.castShadow = true
       scene.add(dir)
 
-      const grid = new THREE.GridHelper(80, 80, 0x3b82f6, 0x111827)
+      const grid = new THREE.GridHelper(100, 50, 0x3b82f6, 0x111827)
       ;(grid.material as THREE.Material).transparent = true
       ;(grid.material as THREE.Material).opacity = 0.25
       scene.add(grid)
@@ -228,6 +331,7 @@ export function ThreeCanvas() {
         new THREE.MeshStandardMaterial({ color: 0xff3b7a, metalness: 0.15, roughness: 0.35 }),
       )
       runnerMesh.castShadow = true
+      runnerMesh.position.y = RUNNER_CAPSULE_OFFSET_Y
       runnerRoot.add(runnerMesh)
 
       const finishMesh = new THREE.Mesh(
@@ -253,16 +357,11 @@ export function ThreeCanvas() {
           loadGltf(`${ASSET_BASE}/cloud.glb`),
         ])
 
-        const platformForId = (id: string) => {
-          if (id === 'ground') return platformLarge.scene
-          if (id === 'p1') return platformLarge.scene
-          if (id === 'p2') return platformMedium.scene
-          if (id === 'p3') return platformMedium.scene
-          return platformLarge.scene
-        }
+        const platformForFootprint = (size: THREE.Vector3) =>
+          Math.max(size.x, size.z) >= 4.4 ? platformLarge.scene : platformMedium.scene
 
         for (const p of levelPlaceholders) {
-          const model = platformForId(p.id).clone(true)
+          const model = platformForFootprint(p.size).clone(true)
           setAllMaterialsDoubleSided(model)
           model.position.copy(p.center)
           // Scale to roughly match collider footprint; Kenney platforms are authored at a consistent size.
@@ -293,10 +392,10 @@ export function ThreeCanvas() {
             ;(c as THREE.Mesh).receiveShadow = false
           }
         })
-        // Align model feet to capsule bottom in runnerRoot local space (origin = Rapier body center).
+        // Body origin = soles; move mesh so lowest point is at y=0 in runnerRoot space.
         charObj.position.set(0, 0, 0)
         const charBounds = new THREE.Box3().setFromObject(charObj)
-        charObj.position.y = RUNNER_FEET_OFFSET_Y - charBounds.min.y
+        charObj.position.y = -charBounds.min.y
         runnerRoot.remove(runnerMesh)
         runnerMesh.geometry.dispose()
         ;(runnerMesh.material as THREE.Material).dispose()
@@ -311,11 +410,10 @@ export function ThreeCanvas() {
         scene.add(flagObj)
         finishMesh.visible = false
 
-        // Small decoration: a few clouds
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 7; i++) {
           const c = cloud.scene.clone(true)
-          c.position.set(-10 + i * 7, 7 + (i % 2) * 1.2, -12 + (i % 3) * 5)
-          c.scale.setScalar(2.2)
+          c.position.set(-5 + i * 9, 8 + (i % 2) * 1.4, -10 + (i % 3) * 4)
+          c.scale.setScalar(2.0)
           scene.add(c)
         }
 
@@ -340,9 +438,13 @@ export function ThreeCanvas() {
         RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(runnerStart.x, runnerStart.y, runnerStart.z),
       )
       const runnerCollider = world.createCollider(
-        RAPIER.ColliderDesc.capsule(RUNNER_CAPSULE_HALF_H, RUNNER_CAPSULE_RADIUS).setFriction(0.0),
+        RAPIER.ColliderDesc.capsule(RUNNER_CAPSULE_HALF_H, RUNNER_CAPSULE_RADIUS)
+          .setTranslation(0, RUNNER_CAPSULE_OFFSET_Y, 0)
+          .setFriction(0.0),
         runnerBody,
       )
+      // DEFAULT only tests dynamic bodies against others; runner is kinematic — need fixed/sensor too (traps, finish).
+      runnerCollider.setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL)
 
       const controller = world.createCharacterController(0.01)
       controller.setApplyImpulsesToDynamicBodies(false)
@@ -350,38 +452,65 @@ export function ThreeCanvas() {
       controller.setMaxSlopeClimbAngle((55 * Math.PI) / 180)
       controller.setMinSlopeSlideAngle((60 * Math.PI) / 180)
 
-      const finishRB = world.createRigidBody(
-        RAPIER.RigidBodyDesc.fixed().setTranslation(finishRef.current.center.x, finishMesh.position.y, finishRef.current.center.z),
-      )
-      const finishCollider = world.createCollider(RAPIER.ColliderDesc.ball(finishRef.current.radius).setSensor(true), finishRB)
-
-      const trapColliderById = new Map<string, RAPIER.Collider>()
+      /** Y-axis orbit angle for the runner camera (starts aligned with RUNNER_CAM_OFFSET_BASE). */
+      let cameraYaw = 0
+      /** Active pointer for runner orbit drag (pointer capture). */
+      let orbitDragPointerId: number | null = null
+      let orbitLastClientX = 0
+      /** Land SFX edge detect; must exist before `resetPhysics` (called on init). */
+      let prevRunnerGrounded = true
 
       const raycaster = new THREE.Raycaster()
       const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
 
       const clearTraps = () => {
-        for (const c of trapColliderById.values()) world.removeCollider(c, true)
-        trapColliderById.clear()
         while (trapGroup.children.length) trapGroup.remove(trapGroup.children[0]!)
       }
 
-      const resetPhysics = () => {
+      const removeTrapById = (trapId: string) => {
+        trapsRef.current = trapsRef.current.filter((t) => t.id !== trapId)
+        for (let i = trapGroup.children.length - 1; i >= 0; i--) {
+          const ch = trapGroup.children[i]!
+          if ((ch.userData as { trapId?: string }).trapId === trapId) trapGroup.remove(ch)
+        }
+      }
+
+      const resetPhysics = (death?: 'void') => {
+        if (death === 'void') audioRef.current.playFall()
         const t = nowMs()
-        debuffRef.current = { slowUntilMs: 0, invertUntilMs: 0 }
+        debuffRef.current = { slowUntilMs: 0, invertUntilMs: 0, freezeUntilMs: 0 }
         trapsRef.current = []
         clearTraps()
 
-        runnerRef.current.position.set(0, 1.0, 0)
+        const spawnY = 0.02
+        runnerRef.current.position.set(0, spawnY, 0)
         runnerRef.current.velocity.set(0, 0, 0)
         runnerRef.current.grounded = false
-        runnerBody.setTranslation(new RAPIER.Vector3(0, 1.0, 0), true)
+        runnerBody.setTranslation(new RAPIER.Vector3(0, spawnY, 0), true)
         runnerBody.setLinvel(new RAPIER.Vector3(0, 0, 0), true)
         runnerBody.setAngvel(new RAPIER.Vector3(0, 0, 0), true)
         cdsRef.current = { slowReadyAtMs: t, invertReadyAtMs: t, pushReadyAtMs: t }
-        runnerRoot.position.set(0, 1.0, 0)
+        runnerRoot.position.set(0, spawnY, 0)
         runnerRoot.updateMatrixWorld(true)
+        cameraYaw = 0
+        {
+          const off = RUNNER_CAM_OFFSET_BASE.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraYaw)
+          const lookY = spawnY + RUNNER_CHEST_Y_ABOVE_FEET
+          runnerCam.position.set(off.x, spawnY + off.y, off.z)
+          runnerCam.lookAt(0, lookY, 0)
+        }
+        if (orbitDragPointerId !== null) {
+          try {
+            renderer.domElement.releasePointerCapture(orbitDragPointerId)
+          } catch {
+            /* ignore */
+          }
+          orbitDragPointerId = null
+        }
+        prevRunnerGrounded = true
+        finishSoundLatchedRef.current = false
       }
+      resetPhysicsFromHudRef.current = resetPhysics
       resetPhysics()
 
       const placeTrapAt = (worldPos: THREE.Vector3) => {
@@ -404,6 +533,7 @@ export function ThreeCanvas() {
           armDelayMs: 1500,
         }
         trapsRef.current = [...trapsRef.current, trap]
+        audioRef.current.playCoin()
 
         const coinProto = (trapGroup.userData as { coin?: THREE.Object3D }).coin
         if (coinProto) {
@@ -431,23 +561,55 @@ export function ThreeCanvas() {
           trapGroup.add(mesh)
         }
 
-        const rb = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(trap.position.x, trap.position.y, trap.position.z))
-        const col = (type === 'spike' ? RAPIER.ColliderDesc.ball(0.55) : RAPIER.ColliderDesc.ball(0.7)).setSensor(true)
-        const collider = world.createCollider(col, rb)
-        collider.setEnabled(false)
-        trapColliderById.set(trap.id, collider)
+        // No Rapier colliders for traps: sensors were treated as movement obstacles by the
+        // character controller, so the runner never entered the trigger volume. Hits use
+        // `trapBallOverlapsRunnerCapsule` only.
       }
 
+      const canvasEl = renderer.domElement
+      canvasEl.style.touchAction = 'none'
+
       const onPointerDown = (e: PointerEvent) => {
-        if (roleRef.current !== 'watcher') return
-        const rect = renderer.domElement.getBoundingClientRect()
-        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-        const y = -(((e.clientY - rect.top) / rect.height) * 2 - 1)
-        raycaster.setFromCamera(new THREE.Vector2(x, y), watchCam)
-        const p = new THREE.Vector3()
-        if (raycaster.ray.intersectPlane(groundPlane, p)) placeTrapAt(p)
+        if (roleRef.current === 'watcher') {
+          if (e.button !== 0) return
+          watchCam.updateProjectionMatrix()
+          watchCam.updateMatrixWorld(true)
+          const rect = canvasEl.getBoundingClientRect()
+          const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+          const y = -(((e.clientY - rect.top) / rect.height) * 2 - 1)
+          raycaster.setFromCamera(new THREE.Vector2(x, y), watchCam)
+          const p = new THREE.Vector3()
+          if (raycaster.ray.intersectPlane(groundPlane, p)) placeTrapAt(p)
+          return
+        }
+        if (roleRef.current === 'runner' && e.button === 0) {
+          orbitDragPointerId = e.pointerId
+          orbitLastClientX = e.clientX
+          canvasEl.setPointerCapture(e.pointerId)
+        }
       }
-      renderer.domElement.addEventListener('pointerdown', onPointerDown)
+
+      const onPointerMove = (e: PointerEvent) => {
+        if (orbitDragPointerId === null || e.pointerId !== orbitDragPointerId) return
+        const dx = e.clientX - orbitLastClientX
+        orbitLastClientX = e.clientX
+        cameraYaw -= dx * RUNNER_CAM_MOUSE_SENS
+      }
+
+      const endOrbitDrag = (e: PointerEvent) => {
+        if (orbitDragPointerId === null || e.pointerId !== orbitDragPointerId) return
+        orbitDragPointerId = null
+        try {
+          canvasEl.releasePointerCapture(e.pointerId)
+        } catch {
+          /* already released */
+        }
+      }
+
+      canvasEl.addEventListener('pointerdown', onPointerDown)
+      canvasEl.addEventListener('pointermove', onPointerMove)
+      canvasEl.addEventListener('pointerup', endOrbitDrag)
+      canvasEl.addEventListener('pointercancel', endOrbitDrag)
 
       const resize = () => {
         const { width, height } = container.getBoundingClientRect()
@@ -455,7 +617,7 @@ export function ThreeCanvas() {
         runnerCam.aspect = width / Math.max(height, 1)
         runnerCam.updateProjectionMatrix()
 
-        const w = 12
+        const w = WATCH_HALF_WIDTH
         const h = (w * height) / Math.max(width, 1)
         watchCam.left = -w
         watchCam.right = w
@@ -480,8 +642,6 @@ export function ThreeCanvas() {
           const trap = trapsRef.current.find((x) => x.id === trapId)
           if (!trap) continue
           const armed = tMs - trap.placedAtMs >= trap.armDelayMs
-          const col = trapColliderById.get(trapId!)
-          if (armed && col && !col.isEnabled()) col.setEnabled(true)
 
           child.scale.setScalar(armed ? 1 : 0.75)
           if ((child as THREE.Mesh).isMesh) {
@@ -495,6 +655,7 @@ export function ThreeCanvas() {
           const debuff = debuffRef.current
           const slowFactor = tMs < debuff.slowUntilMs ? 0.55 : 1.0
           const invert = tMs < debuff.invertUntilMs
+          const frozen = tMs < debuff.freezeUntilMs
 
           const input = inputRef.current
           const ix = (input.right ? 1 : 0) - (input.left ? 1 : 0)
@@ -502,26 +663,58 @@ export function ThreeCanvas() {
           const mx = invert ? -ix : ix
           const mz = invert ? -iz : iz
 
-          const move = new THREE.Vector3(mx, 0, mz)
+          // Camera-relative WASD: forward = view toward runner on XZ, strafe = right.
+          const rPre = runnerRef.current.position
+          const camTargetForMove = new THREE.Vector3(
+            rPre.x,
+            rPre.y + RUNNER_CHEST_Y_ABOVE_FEET,
+            rPre.z,
+          )
+          const camOff = RUNNER_CAM_OFFSET_BASE.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraYaw)
+          const camDesired = new THREE.Vector3(rPre.x + camOff.x, rPre.y + camOff.y, rPre.z + camOff.z)
+          const forward = camTargetForMove.clone().sub(camDesired)
+          forward.y = 0
+          if (forward.lengthSq() < 1e-8) forward.set(0, 0, -1)
+          else forward.normalize()
+          const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
+
+          const move = forward.clone().multiplyScalar(-mz).add(right.clone().multiplyScalar(mx))
           if (move.lengthSq() > 0) move.normalize()
 
           const runner = runnerRef.current
-          const speed = 6.0 * slowFactor
-          runner.velocity.x = THREE.MathUtils.lerp(runner.velocity.x, move.x * speed, 0.22)
-          runner.velocity.z = THREE.MathUtils.lerp(runner.velocity.z, move.z * speed, 0.22)
+          if (frozen) {
+            runner.velocity.x = THREE.MathUtils.lerp(runner.velocity.x, 0, 0.35)
+            runner.velocity.z = THREE.MathUtils.lerp(runner.velocity.z, 0, 0.35)
+          } else {
+            const speed = 6.0 * slowFactor
+            runner.velocity.x = THREE.MathUtils.lerp(runner.velocity.x, move.x * speed, 0.22)
+            runner.velocity.z = THREE.MathUtils.lerp(runner.velocity.z, move.z * speed, 0.22)
+          }
 
           runner.velocity.y -= 18 * dt
-          if (runner.grounded && input.jumpQueued) runner.velocity.y = 7.5
+          if (!frozen && runner.grounded && input.jumpQueued) {
+            audioRef.current.playJump()
+            runner.velocity.y = 7.5
+          }
           input.jumpQueued = false
 
           const desired = new RAPIER.Vector3(runner.velocity.x * dt, runner.velocity.y * dt, runner.velocity.z * dt)
-          controller.computeColliderMovement(runnerCollider, desired)
+          controller.computeColliderMovement(
+            runnerCollider,
+            desired,
+            RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+          )
           const corr = controller.computedMovement()
           const cur = runnerBody.translation()
           runnerBody.setNextKinematicTranslation(new RAPIER.Vector3(cur.x + corr.x, cur.y + corr.y, cur.z + corr.z))
 
           runner.grounded = controller.computedGrounded()
           if (runner.grounded && runner.velocity.y < 0) runner.velocity.y = 0
+
+          if (!prevRunnerGrounded && runner.grounded) audioRef.current.playLand()
+          prevRunnerGrounded = runner.grounded
+        } else {
+          prevRunnerGrounded = runnerRef.current.grounded
         }
 
         world.step()
@@ -531,34 +724,49 @@ export function ThreeCanvas() {
 
         // Triggers
         if (runStateRef.current === 'running') {
-          if (world.intersectionPair(runnerCollider, finishCollider)) {
-            setRunState('finished')
+          if (
+            !finishSoundLatchedRef.current &&
+            trapBallOverlapsRunnerCapsule(
+              finishRef.current.center.x,
+              finishMesh.position.y,
+              finishRef.current.center.z,
+              finishRef.current.radius,
+              tr.x,
+              tr.y,
+              tr.z,
+            )
+          ) {
+            finishSoundLatchedRef.current = true
+            audioRef.current.playCoin()
+            setRunStateSyncedRef.current('finished')
             setRunEndMs(tMs)
           }
 
+          const trapsHit: Trap[] = []
           for (const trap of trapsRef.current) {
             if (tMs - trap.placedAtMs < trap.armDelayMs) continue
-            const col = trapColliderById.get(trap.id)
-            if (!col || !col.isEnabled()) continue
-            if (!world.intersectionPair(runnerCollider, col)) continue
-
+            const ballR = trap.type === 'spike' ? TRAP_SPIKE_BALL_R : TRAP_SLOW_BALL_R
+            if (
+              !trapBallOverlapsRunnerCapsule(trap.position.x, trap.position.y, trap.position.z, ballR, tr.x, tr.y, tr.z)
+            )
+              continue
+            trapsHit.push(trap)
+          }
+          for (const trap of trapsHit) {
+            removeTrapById(trap.id)
             if (trap.type === 'spike') {
-              setRunState('idle')
-              setRunStartMs(0)
-              setRunEndMs(0)
-              resetPhysics()
-              break
-            }
-            if (trap.type === 'slow') {
+              audioRef.current.playBreak()
+              debuffRef.current.freezeUntilMs = Math.max(debuffRef.current.freezeUntilMs, tMs + SPIKE_FREEZE_MS)
+            } else {
               debuffRef.current.slowUntilMs = Math.max(debuffRef.current.slowUntilMs, tMs + 2500)
             }
           }
 
           if (runnerRef.current.position.y < -6) {
-            setRunState('idle')
+            setRunStateSyncedRef.current('idle')
             setRunStartMs(0)
             setRunEndMs(0)
-            resetPhysics()
+            resetPhysics('void')
           }
         }
 
@@ -571,13 +779,19 @@ export function ThreeCanvas() {
         }
         runnerRoot.updateMatrixWorld(true)
 
-        const camTarget = new THREE.Vector3(rPos.x, rPos.y + 0.35, rPos.z)
-        const camPos = new THREE.Vector3(rPos.x - 4.0, rPos.y + 3.0, rPos.z + 4.2)
-        runnerCam.position.lerp(camPos, 0.18)
-        runnerCam.lookAt(camTarget)
+        if (roleRef.current === 'runner') {
+          canvasEl.style.cursor = orbitDragPointerId !== null ? 'grabbing' : 'grab'
+          const camTarget = new THREE.Vector3(rPos.x, rPos.y + RUNNER_CHEST_Y_ABOVE_FEET, rPos.z)
+          const off = RUNNER_CAM_OFFSET_BASE.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraYaw)
+          const camPos = new THREE.Vector3(rPos.x + off.x, rPos.y + off.y, rPos.z + off.z)
+          runnerCam.position.lerp(camPos, 0.18)
+          runnerCam.lookAt(camTarget)
+        } else {
+          canvasEl.style.cursor = 'default'
+        }
 
-        watchCam.position.set(7, 18, -2)
-        watchCam.lookAt(new THREE.Vector3(7, 0, -2))
+        watchCam.position.set(WATCH_LEVEL_CENTER.x, 20, WATCH_LEVEL_CENTER.z - 2)
+        watchCam.lookAt(WATCH_LEVEL_CENTER.x, 0, WATCH_LEVEL_CENTER.z)
 
         renderer.render(scene, roleRef.current === 'watcher' ? watchCam : runnerCam)
         raf = window.requestAnimationFrame(tick)
@@ -585,9 +799,13 @@ export function ThreeCanvas() {
       tick()
 
       return () => {
+        resetPhysicsFromHudRef.current = () => {}
         window.cancelAnimationFrame(raf)
         ro.disconnect()
-        renderer.domElement.removeEventListener('pointerdown', onPointerDown)
+        canvasEl.removeEventListener('pointerdown', onPointerDown)
+        canvasEl.removeEventListener('pointermove', onPointerMove)
+        canvasEl.removeEventListener('pointerup', endOrbitDrag)
+        canvasEl.removeEventListener('pointercancel', endOrbitDrag)
         clearTraps()
         world.free()
         renderer.dispose()
@@ -596,10 +814,14 @@ export function ThreeCanvas() {
     }
 
     let cleanup: (() => void) | undefined
-    start().then((c) => {
-      cleanup = c
-      if (cancelled) cleanup?.()
-    })
+    start()
+      .then((c) => {
+        cleanup = c
+        if (cancelled) cleanup?.()
+      })
+      .catch((err) => {
+        console.error('[ThreeCanvas] Failed to initialize scene / physics', err)
+      })
 
     return () => {
       cancelled = true
@@ -609,23 +831,21 @@ export function ThreeCanvas() {
 
   const startRun = () => {
     if (runState === 'running') return
+    finishSoundLatchedRef.current = false
     const t = nowMs()
-    setRunState('running')
+    setRunStateSyncedRef.current('running')
     setRunStartMs(t)
     setRunEndMs(0)
   }
 
   const resetRun = () => {
     const t = nowMs()
-    setRunState('idle')
+    setRunStateSyncedRef.current('idle')
     setRunStartMs(0)
     setRunEndMs(0)
-    debuffRef.current = { slowUntilMs: 0, invertUntilMs: 0 }
-    trapsRef.current = []
-    runnerRef.current.position.set(0, 1.0, 0)
-    runnerRef.current.velocity.set(0, 0, 0)
-    runnerRef.current.grounded = false
+    debuffRef.current = { slowUntilMs: 0, invertUntilMs: 0, freezeUntilMs: 0 }
     cdsRef.current = { slowReadyAtMs: t, invertReadyAtMs: t, pushReadyAtMs: t }
+    resetPhysicsFromHudRef.current()
   }
 
   const elapsedMs =
@@ -642,6 +862,7 @@ export function ThreeCanvas() {
     const dur = 3500
     if (role !== 'watcher') return
     if (!can(cdsRef.current.slowReadyAtMs)) return
+    audio.playBreak()
     debuffRef.current.slowUntilMs = Math.max(debuffRef.current.slowUntilMs, nowMs() + dur)
     cdsRef.current.slowReadyAtMs = nowMs() + cd
   }
@@ -651,6 +872,7 @@ export function ThreeCanvas() {
     const dur = 2800
     if (role !== 'watcher') return
     if (!can(cdsRef.current.invertReadyAtMs)) return
+    audio.playBreak()
     debuffRef.current.invertUntilMs = Math.max(debuffRef.current.invertUntilMs, nowMs() + dur)
     cdsRef.current.invertReadyAtMs = nowMs() + cd
   }
@@ -659,6 +881,7 @@ export function ThreeCanvas() {
     const cd = 9000
     if (role !== 'watcher') return
     if (!can(cdsRef.current.pushReadyAtMs)) return
+    audio.playBreak()
     runnerRef.current.velocity.x += 6
     runnerRef.current.velocity.z -= 6
     cdsRef.current.pushReadyAtMs = nowMs() + cd
@@ -683,7 +906,10 @@ export function ThreeCanvas() {
           </button>
           <span className="pill">Press TAB to swap roles</span>
         </div>
-        <div className="hotkeys">Runner: WASD + Space • Watcher: click to place trap (top-down), use abilities.</div>
+        <div className="hotkeys">
+          Course: small pads with gaps (~2.5 m) — jump pad to pad toward the flag (+X). Runner: WASD + Space, drag to
+          orbit • Watcher: traps / abilities.
+        </div>
       </header>
 
       {role === 'watcher' && (
@@ -691,10 +917,10 @@ export function ThreeCanvas() {
           <div className="panelTitle">Watcher tools</div>
           <div className="panelGrid">
             <button className="button" onClick={() => setSelectedTrap('spike')} disabled={selectedTrap === 'spike'}>
-              Trap: Spike (1.5s arm)
+              Trap: Spike → freeze (1.5s arm)
             </button>
             <button className="button" onClick={() => setSelectedTrap('slow')} disabled={selectedTrap === 'slow'}>
-              Trap: Slow pad (1.5s arm)
+              Trap: Slow pad (1.5s arm, one-shot)
             </button>
             <button className="button" onClick={castSlow} disabled={!can(cdsRef.current.slowReadyAtMs)}>
               Slow ({Math.ceil(clamp((cdsRef.current.slowReadyAtMs - hudNowMs) / 1000, 0, 99))}s)

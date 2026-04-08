@@ -1,11 +1,14 @@
 import './App.css'
+import { GameAudioProvider } from './audio/GameAudioContext'
 import { ThreeCanvas } from './ThreeCanvas'
 
 function App() {
   return (
-    <main className="app">
-      <ThreeCanvas />
-    </main>
+    <GameAudioProvider>
+      <main className="app">
+        <ThreeCanvas />
+      </main>
+    </GameAudioProvider>
   )
 }
 

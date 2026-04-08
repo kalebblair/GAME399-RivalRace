@@ -1,0 +1,11 @@
+Rival Race — audio credits
+
+Background loop (run-bgm.mp3)
+  Source: “Platformer music” by Mopz on OpenGameArt.org
+  File originally: lsc_ingame.mp3 (~3.5 MB; longer than the prior short loop)
+  License: CC0 (public domain dedication)
+  https://opengameart.org/content/platformer-music
+
+SFX (jump, land, coin, break, fall — .ogg)
+  Kenney audio / similar starter UI & game SFX packs (MIT / permissive).
+  See project notes or Kenney.nl for full license text.
