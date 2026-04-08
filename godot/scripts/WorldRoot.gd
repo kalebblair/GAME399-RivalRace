@@ -9,8 +9,11 @@ const TRAP_MAX_ACTIVE := 3
 const TRAP_MIN_DISTANCE := 2.0
 const TRAP_SPIKE_RADIUS := 0.55
 const TRAP_SLOW_RADIUS := 0.70
-const TEX_GRASS_PATH := "res://assets/textures/environment/grass00.png"
-const TEX_STONE_PATH := "res://assets/textures/environment/stone.png"
+const PLATFORM_LARGE_MODEL_PATH := "res://assets/kenney-platformer/platform-large.glb"
+const PLATFORM_MEDIUM_MODEL_PATH := "res://assets/kenney-platformer/platform-medium.glb"
+const FLAG_MODEL_PATH := "res://assets/kenney-platformer/flag.glb"
+const COIN_MODEL_PATH := "res://assets/kenney-platformer/coin.glb"
+const BRICK_MODEL_PATH := "res://assets/kenney-platformer/brick.glb"
 
 const LEVEL := [
 	{"id": "ground", "min": Vector3(-4.0, -0.55, -4.0), "max": Vector3(4.0, 0.0, 4.0), "color": Color8(26, 39, 68)},
@@ -29,13 +32,20 @@ const LEVEL := [
 
 var _trap_serial := 0
 var _traps: Dictionary = {}
-var _grass_tex: Texture2D
-var _stone_tex: Texture2D
+var _platform_large_scene: PackedScene
+var _platform_medium_scene: PackedScene
+var _flag_scene: PackedScene
+var _coin_scene: PackedScene
+var _brick_scene: PackedScene
 
 func _ready() -> void:
-	_grass_tex = load(TEX_GRASS_PATH) as Texture2D
-	_stone_tex = load(TEX_STONE_PATH) as Texture2D
+	_platform_large_scene = load(PLATFORM_LARGE_MODEL_PATH) as PackedScene
+	_platform_medium_scene = load(PLATFORM_MEDIUM_MODEL_PATH) as PackedScene
+	_flag_scene = load(FLAG_MODEL_PATH) as PackedScene
+	_coin_scene = load(COIN_MODEL_PATH) as PackedScene
+	_brick_scene = load(BRICK_MODEL_PATH) as PackedScene
 	_build_level_geometry()
+	_build_finish_visual()
 	finish_area.body_entered.connect(_on_finish_body_entered)
 
 func get_trap_count() -> int:
@@ -77,22 +87,8 @@ func place_trap(world_pos: Vector3, trap_type: StringName, runner_pos: Vector3) 
 	col.shape = sphere
 	area.add_child(col)
 
-	var mesh_node := MeshInstance3D.new()
-	if trap_type == &"spike":
-		var cone := CylinderMesh.new()
-		cone.top_radius = 0.0
-		cone.bottom_radius = 0.5
-		cone.height = 0.8
-		mesh_node.mesh = cone
-		mesh_node.position.y = 0.35
-	else:
-		var cyl := CylinderMesh.new()
-		cyl.top_radius = 0.6
-		cyl.bottom_radius = 0.6
-		cyl.height = 0.12
-		mesh_node.mesh = cyl
-	mesh_node.material_override = _trap_material(trap_type)
-	area.add_child(mesh_node)
+	var trap_visual := _build_trap_visual(trap_type)
+	area.add_child(trap_visual)
 
 	var trap_data := {
 		"id": trap_id,
@@ -127,25 +123,77 @@ func _build_level_geometry() -> void:
 		col.position = center
 		body.add_child(col)
 
-		var mesh_node := MeshInstance3D.new()
-		var mesh := BoxMesh.new()
-		mesh.size = size
-		mesh_node.mesh = mesh
-		mesh_node.position = center
-		mesh_node.material_override = _platform_material(String(box["id"]), box["color"])
-		body.add_child(mesh_node)
+		var visual := _build_platform_visual(size, center)
+		body.add_child(visual)
 
-func _platform_material(platform_id: String, fallback_color: Color) -> StandardMaterial3D:
+func _build_platform_visual(size: Vector3, center: Vector3) -> Node3D:
+	var use_large := maxf(size.x, size.z) >= 4.4
+	var model := _instantiate_model(_platform_large_scene if use_large else _platform_medium_scene)
+	if model != null:
+		model.position = center
+		model.scale = Vector3(maxf(size.x / 4.0, 0.01), maxf(size.y / 0.6, 0.01), maxf(size.z / 4.0, 0.01))
+		return model
+	var fallback := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	fallback.mesh = mesh
+	fallback.position = center
 	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color8(65, 93, 133)
 	mat.roughness = 0.95
-	mat.uv1_scale = Vector3(2.0, 2.0, 1.0)
-	var tex := _grass_tex if platform_id == "ground" else _stone_tex
-	if tex != null:
-		mat.albedo_texture = tex
-		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	fallback.material_override = mat
+	return fallback
+
+func _build_finish_visual() -> void:
+	for child in finish_area.get_children():
+		if child.name == "FinishVisual":
+			child.queue_free()
+	var visual := _instantiate_model(_flag_scene)
+	if visual == null:
+		var fallback := MeshInstance3D.new()
+		fallback.name = "FinishVisual"
+		var mesh := CylinderMesh.new()
+		mesh.height = 2.0
+		mesh.bottom_radius = 0.08
+		mesh.top_radius = 0.08
+		fallback.mesh = mesh
+		fallback.position = Vector3(0.0, 0.9, 0.0)
+		finish_area.add_child(fallback)
+		return
+	visual.name = "FinishVisual"
+	visual.position = Vector3(0.0, 0.05, 0.0)
+	visual.scale = Vector3(1.4, 1.4, 1.4)
+	finish_area.add_child(visual)
+
+func _build_trap_visual(trap_type: StringName) -> Node3D:
+	var scene := _brick_scene if trap_type == &"spike" else _coin_scene
+	var visual := _instantiate_model(scene)
+	if visual != null:
+		visual.position = Vector3(0.0, 0.3 if trap_type == &"spike" else 0.45, 0.0)
+		visual.scale = Vector3.ONE * (0.7 if trap_type == &"spike" else 0.6)
+		return visual
+	var fallback := MeshInstance3D.new()
+	if trap_type == &"spike":
+		var cone := CylinderMesh.new()
+		cone.top_radius = 0.0
+		cone.bottom_radius = 0.5
+		cone.height = 0.8
+		fallback.mesh = cone
+		fallback.position.y = 0.35
 	else:
-		mat.albedo_color = fallback_color
-	return mat
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.6
+		cyl.bottom_radius = 0.6
+		cyl.height = 0.12
+		fallback.mesh = cyl
+	fallback.material_override = _trap_material(trap_type)
+	return fallback
+
+func _instantiate_model(scene: PackedScene) -> Node3D:
+	if scene == null:
+		return null
+	var node := scene.instantiate()
+	return node as Node3D
 
 func _top_surface_y_at(x: float, z: float) -> float:
 	var y := -INF
