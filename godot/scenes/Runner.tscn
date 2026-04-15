@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene format=3 uid="uid://dr0g71c61urco"]
 
-[ext_resource type="Script" path="res://scripts/RunnerController.gd" id="1_runner"]
-[ext_resource type="PackedScene" path="res://assets/kenney-platformer/character.glb" id="2_character"]
+[ext_resource type="Script" uid="uid://doyl27q782qwc" path="res://scripts/RunnerController.gd" id="1_runner"]
+[ext_resource type="PackedScene" uid="uid://2mxh4o8hsmen" path="res://assets/kenney-platformer/character.glb" id="2_character"]
+
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
 radius = 0.35
 height = 0.9
@@ -10,11 +11,9 @@ height = 0.9
 script = ExtResource("1_runner")
 
 [node name="BodyCollision" type="CollisionShape3D" parent="." unique_id=1307794340]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.44508147, 0)
 shape = SubResource("CapsuleShape3D_body")
-position = Vector3(0, 0.8, 0)
 
 [node name="VisualRoot" type="Node3D" parent="." unique_id=719299493]
-position = Vector3(0, 0, 0)
-scale = Vector3(0.9, 0.9, 0.9)
 
-[node name="Character" parent="VisualRoot" instance=ExtResource("2_character")]
+[node name="Character" parent="VisualRoot" unique_id=85109082 instance=ExtResource("2_character")]

@@ -2,7 +2,7 @@
 
 [ext_resource type="Script" uid="uid://bbs2ybi6x3xj8" path="res://scripts/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/WorldRoot.tscn" id="2_world"]
-[ext_resource type="PackedScene" path="res://scenes/Runner.tscn" id="3_runner"]
+[ext_resource type="PackedScene" uid="uid://dr0g71c61urco" path="res://scenes/Runner.tscn" id="3_runner"]
 [ext_resource type="PackedScene" path="res://scenes/WatcherUI.tscn" id="4_ui"]
 [ext_resource type="PackedScene" path="res://scenes/Audio.tscn" id="5_audio"]
 

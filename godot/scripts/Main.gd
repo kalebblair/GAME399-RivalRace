@@ -18,14 +18,15 @@ const RUNNER_CAM_MOUSE_SENS := 0.006
 const RUNNER_CAM_PITCH_SENS := 0.006
 const CAM_COLLISION_MARGIN := 0.2
 const CAM_MIN_DISTANCE := 0.75
-const WATCH_CENTER := Vector3(23.0, 0.0, -2.5)
-const WATCH_CAM_HEIGHT := 20.0
+const WATCH_CENTER := Vector3(40.0, 0.0, -1.6)
+const WATCH_CAM_HEIGHT := 26.0
 const WATCH_PAN_SPEED := 18.0
 const WATCH_DRAG_PAN_SCALE := 0.035
 const WATCH_ZOOM_STEP := 1.5
 const WATCH_MIN_SIZE := 8.0
-const WATCH_MAX_SIZE := 48.0
-const RUNNER_SPAWN := Vector3(0.0, 0.05, 0.0)
+const WATCH_MAX_SIZE := 72.0
+## Ground platform top is y=0; align feet spawn with surface (avoids initial penetration / sink).
+const RUNNER_SPAWN := Vector3(0.0, 0.0, 0.0)
 const FAIL_Y := -6.0
 const SPIKE_FREEZE_SEC := 2.4
 const TRAP_SLOW_SEC := 2.5
@@ -72,7 +73,7 @@ func _ready() -> void:
 	if runner.has_signal("landed"):
 		runner.connect("landed", _on_runner_landed)
 	_reset_run()
-	watcher_camera.size = 20.0
+	watcher_camera.size = 30.0
 	_update_cameras(1.0)
 
 func _physics_process(_delta: float) -> void:

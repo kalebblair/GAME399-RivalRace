@@ -14,17 +14,23 @@ const PLATFORM_MEDIUM_MODEL_PATH := "res://assets/kenney-platformer/platform-med
 const FLAG_MODEL_PATH := "res://assets/kenney-platformer/flag.glb"
 const COIN_MODEL_PATH := "res://assets/kenney-platformer/coin.glb"
 const BRICK_MODEL_PATH := "res://assets/kenney-platformer/brick.glb"
+const PLATFORM_ALIGN_TOLERANCE := 0.08
 
 const LEVEL := [
 	{"id": "ground", "min": Vector3(-4.0, -0.55, -4.0), "max": Vector3(4.0, 0.0, 4.0), "color": Color8(26, 39, 68)},
-	{"id": "p01", "min": Vector3(6.5, 0.0, -1.35), "max": Vector3(9.7, 0.4, 1.35), "color": Color8(36, 52, 86)},
-	{"id": "p02", "min": Vector3(12.2, 0.38, -1.75), "max": Vector3(15.4, 0.78, 0.95), "color": Color8(42, 63, 94)},
-	{"id": "p03", "min": Vector3(17.9, 0.76, -2.15), "max": Vector3(21.1, 1.16, 0.55), "color": Color8(49, 72, 104)},
-	{"id": "p04", "min": Vector3(23.6, 1.14, -2.55), "max": Vector3(26.8, 1.54, 0.15), "color": Color8(55, 90, 122)},
-	{"id": "p05", "min": Vector3(29.3, 1.52, -2.95), "max": Vector3(32.5, 1.92, -0.25), "color": Color8(61, 92, 138)},
-	{"id": "p06", "min": Vector3(35.0, 1.9, -3.35), "max": Vector3(38.2, 2.3, -0.65), "color": Color8(69, 104, 146)},
-	{"id": "p07", "min": Vector3(40.7, 2.28, -3.75), "max": Vector3(43.9, 2.68, -1.05), "color": Color8(77, 116, 152)},
-	{"id": "goal", "min": Vector3(46.4, 2.66, -5.5), "max": Vector3(51.2, 3.06, -2.0), "color": Color8(90, 127, 184)},
+	{"id": "p01", "min": Vector3(6.4, 0.0, -1.2), "max": Vector3(9.5, 0.38, 1.2), "color": Color8(36, 52, 86)},
+	{"id": "p02", "min": Vector3(12.1, 0.34, -2.1), "max": Vector3(15.0, 0.74, 0.3), "color": Color8(42, 63, 94)},
+	{"id": "p03", "min": Vector3(17.9, 0.68, -0.5), "max": Vector3(21.0, 1.08, 2.2), "color": Color8(49, 72, 104)},
+	{"id": "p04", "min": Vector3(24.0, 1.02, -3.0), "max": Vector3(27.3, 1.44, -0.5), "color": Color8(55, 90, 122)},
+	{"id": "p05", "min": Vector3(30.1, 1.36, -1.6), "max": Vector3(32.3, 1.82, 1.2), "color": Color8(61, 92, 138)},
+	{"id": "p06", "min": Vector3(35.0, 1.72, -3.8), "max": Vector3(39.0, 2.08, -1.4), "color": Color8(69, 104, 146)},
+	{"id": "p07", "min": Vector3(41.8, 2.06, -2.1), "max": Vector3(45.2, 2.42, 0.2), "color": Color8(77, 116, 152)},
+	{"id": "p08", "min": Vector3(47.8, 2.34, -4.4), "max": Vector3(50.0, 2.82, -1.7), "color": Color8(84, 123, 161)},
+	{"id": "p09", "min": Vector3(52.9, 2.72, -1.1), "max": Vector3(56.8, 3.12, 1.6), "color": Color8(93, 134, 170)},
+	{"id": "p10", "min": Vector3(59.7, 3.00, -3.9), "max": Vector3(62.3, 3.42, -1.2), "color": Color8(101, 144, 178)},
+	{"id": "p11", "min": Vector3(65.2, 3.32, -0.8), "max": Vector3(69.0, 3.72, 1.8), "color": Color8(108, 152, 186)},
+	{"id": "p12", "min": Vector3(71.8, 3.62, -3.0), "max": Vector3(75.0, 4.02, -0.3), "color": Color8(114, 158, 194)},
+	{"id": "goal", "min": Vector3(77.7, 3.96, -4.6), "max": Vector3(83.2, 4.38, -0.6), "color": Color8(120, 168, 204)},
 ]
 
 @onready var finish_area: Area3D = $FinishArea
@@ -45,6 +51,7 @@ func _ready() -> void:
 	_coin_scene = load(COIN_MODEL_PATH) as PackedScene
 	_brick_scene = load(BRICK_MODEL_PATH) as PackedScene
 	_build_level_geometry()
+	_position_finish_area()
 	_build_finish_visual()
 	finish_area.body_entered.connect(_on_finish_body_entered)
 
@@ -123,15 +130,15 @@ func _build_level_geometry() -> void:
 		col.position = center
 		body.add_child(col)
 
-		var visual := _build_platform_visual(size, center)
+		var visual := _build_platform_visual(size, center, String(box["id"]))
 		body.add_child(visual)
 
-func _build_platform_visual(size: Vector3, center: Vector3) -> Node3D:
+func _build_platform_visual(size: Vector3, center: Vector3, platform_id: String) -> Node3D:
 	var use_large := maxf(size.x, size.z) >= 4.4
 	var model := _instantiate_model(_platform_large_scene if use_large else _platform_medium_scene)
 	if model != null:
-		model.position = center
-		model.scale = Vector3(maxf(size.x / 4.0, 0.01), maxf(size.y / 0.6, 0.01), maxf(size.z / 4.0, 0.01))
+		_fit_model_to_platform_box(model, size, center)
+		_verify_platform_alignment(platform_id, model, size, center)
 		return model
 	var fallback := MeshInstance3D.new()
 	var mesh := BoxMesh.new()
@@ -165,6 +172,18 @@ func _build_finish_visual() -> void:
 	visual.scale = Vector3(1.4, 1.4, 1.4)
 	finish_area.add_child(visual)
 
+func _position_finish_area() -> void:
+	var goal := _goal_box()
+	if goal.is_empty():
+		return
+	var min_v: Vector3 = goal["min"]
+	var max_v: Vector3 = goal["max"]
+	finish_area.position = Vector3(
+		(min_v.x + max_v.x) * 0.5,
+		max_v.y + 0.25,
+		(min_v.z + max_v.z) * 0.5
+	)
+
 func _build_trap_visual(trap_type: StringName) -> Node3D:
 	var scene := _brick_scene if trap_type == &"spike" else _coin_scene
 	var visual := _instantiate_model(scene)
@@ -195,6 +214,109 @@ func _instantiate_model(scene: PackedScene) -> Node3D:
 	var node := scene.instantiate()
 	return node as Node3D
 
+func _fit_model_to_platform_box(model: Node3D, size: Vector3, center: Vector3) -> void:
+	var info := _model_local_aabb(model)
+	if not bool(info["valid"]):
+		model.position = center
+		model.scale = Vector3.ONE
+		return
+	var aabb: AABB = info["aabb"]
+	if aabb.size.x <= 0.0001 or aabb.size.y <= 0.0001 or aabb.size.z <= 0.0001:
+		model.position = center
+		model.scale = Vector3.ONE
+		return
+	var scale_x := size.x / aabb.size.x
+	var scale_y := size.y / aabb.size.y
+	var scale_z := size.z / aabb.size.z
+	model.scale = Vector3(scale_x, scale_y, scale_z)
+
+	var scaled_min := Vector3(aabb.position.x * scale_x, aabb.position.y * scale_y, aabb.position.z * scale_z)
+	var scaled_size := Vector3(aabb.size.x * scale_x, aabb.size.y * scale_y, aabb.size.z * scale_z)
+	var box_min := center - (size * 0.5)
+	model.position = Vector3(
+		center.x - (scaled_min.x + (scaled_size.x * 0.5)),
+		box_min.y - scaled_min.y,
+		center.z - (scaled_min.z + (scaled_size.z * 0.5))
+	)
+
+func _verify_platform_alignment(platform_id: String, model: Node3D, size: Vector3, center: Vector3) -> void:
+	var info := _model_local_aabb(model)
+	if not bool(info["valid"]):
+		push_warning("Platform %s: unable to verify model bounds." % platform_id)
+		return
+	var aabb: AABB = info["aabb"]
+	var scaled_min := Vector3(
+		aabb.position.x * model.scale.x,
+		aabb.position.y * model.scale.y,
+		aabb.position.z * model.scale.z
+	)
+	var scaled_max := Vector3(
+		(aabb.position.x + aabb.size.x) * model.scale.x,
+		(aabb.position.y + aabb.size.y) * model.scale.y,
+		(aabb.position.z + aabb.size.z) * model.scale.z
+	)
+	var visual_min := model.position + scaled_min
+	var visual_max := model.position + scaled_max
+	var box_min := center - (size * 0.5)
+	var box_max := center + (size * 0.5)
+	var dx := maxf(absf(visual_min.x - box_min.x), absf(visual_max.x - box_max.x))
+	var dy := maxf(absf(visual_min.y - box_min.y), absf(visual_max.y - box_max.y))
+	var dz := maxf(absf(visual_min.z - box_min.z), absf(visual_max.z - box_max.z))
+	if dx > PLATFORM_ALIGN_TOLERANCE or dy > PLATFORM_ALIGN_TOLERANCE or dz > PLATFORM_ALIGN_TOLERANCE:
+		push_warning(
+			"Platform %s misalignment exceeds tolerance (dx=%.3f, dy=%.3f, dz=%.3f)." %
+			[platform_id, dx, dy, dz]
+		)
+
+func _model_local_aabb(root: Node3D) -> Dictionary:
+	var state := {
+		"valid": false,
+		"min": Vector3.ZERO,
+		"max": Vector3.ZERO,
+	}
+	for child in root.get_children():
+		_accumulate_mesh_bounds(child, Transform3D.IDENTITY, state)
+	if not bool(state["valid"]):
+		return {"valid": false}
+	var min_v: Vector3 = state["min"]
+	var max_v: Vector3 = state["max"]
+	var aabb := AABB(min_v, max_v - min_v)
+	return {"valid": true, "aabb": aabb}
+
+func _accumulate_mesh_bounds(node: Node, parent_xform: Transform3D, state: Dictionary) -> void:
+	var local_xform := parent_xform
+	if node is Node3D:
+		local_xform = parent_xform * (node as Node3D).transform
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		if mi.mesh != null:
+			var mesh_aabb := mi.mesh.get_aabb()
+			for corner in _aabb_corners(mesh_aabb):
+				var p := local_xform * corner
+				if not bool(state["valid"]):
+					state["valid"] = true
+					state["min"] = p
+					state["max"] = p
+				else:
+					state["min"] = (state["min"] as Vector3).min(p)
+					state["max"] = (state["max"] as Vector3).max(p)
+	for child in node.get_children():
+		_accumulate_mesh_bounds(child, local_xform, state)
+
+func _aabb_corners(aabb: AABB) -> Array[Vector3]:
+	var p := aabb.position
+	var s := aabb.size
+	return [
+		Vector3(p.x, p.y, p.z),
+		Vector3(p.x + s.x, p.y, p.z),
+		Vector3(p.x, p.y + s.y, p.z),
+		Vector3(p.x, p.y, p.z + s.z),
+		Vector3(p.x + s.x, p.y + s.y, p.z),
+		Vector3(p.x + s.x, p.y, p.z + s.z),
+		Vector3(p.x, p.y + s.y, p.z + s.z),
+		Vector3(p.x + s.x, p.y + s.y, p.z + s.z),
+	]
+
 func _top_surface_y_at(x: float, z: float) -> float:
 	var y := -INF
 	for box in LEVEL:
@@ -207,6 +329,12 @@ func _top_surface_y_at(x: float, z: float) -> float:
 func _next_trap_id() -> String:
 	_trap_serial += 1
 	return "trap_%d" % _trap_serial
+
+func _goal_box() -> Dictionary:
+	for box in LEVEL:
+		if String(box["id"]) == "goal":
+			return box
+	return {}
 
 func _trap_material(trap_type: StringName) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
